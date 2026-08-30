@@ -1,0 +1,133 @@
+name: Build FMO EMQX + SAS
+
+on:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      sas_version:
+        description: "SAS release tag, for example v1.0.6; blank means latest"
+        required: false
+        type: string
+      force:
+        description: "Build even when the immutable version tag already exists"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fmo-image
+  cancel-in-progress: false
+
+env:
+  SAS_REPO: BG5ESN/fmo-server-authrozier-service
+  EMQX_IMAGE: emqx/emqx:5.8.9
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      amd64_url: ${{ steps.release.outputs.amd64_url }}
+      arm64_url: ${{ steps.release.outputs.arm64_url }}
+      amd64_sha256: ${{ steps.release.outputs.amd64_sha256 }}
+      arm64_sha256: ${{ steps.release.outputs.arm64_sha256 }}
+    steps:
+      - name: Resolve SAS release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.sas_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_VERSION" ]]; then
+            [[ "$REQUESTED_VERSION" == v* ]] || REQUESTED_VERSION="v$REQUESTED_VERSION"
+            release_json="$(gh api "repos/${SAS_REPO}/releases/tags/${REQUESTED_VERSION}")"
+          else
+            release_json="$(gh api "repos/${SAS_REPO}/releases/latest")"
+          fi
+
+          tag="$(jq -r '.tag_name' <<<"$release_json")"
+          amd64_asset="$(jq -c '.assets[] | select(.name == "linux-x64.tar.gz")' <<<"$release_json" | head -n1)"
+          arm64_asset="$(jq -c '.assets[] | select(.name == "linux-arm64.tar.gz")' <<<"$release_json" | head -n1)"
+          amd64_url="$(jq -r '.browser_download_url' <<<"$amd64_asset")"
+          arm64_url="$(jq -r '.browser_download_url' <<<"$arm64_asset")"
+          amd64_sha256="$(jq -r '.digest' <<<"$amd64_asset")"
+          arm64_sha256="$(jq -r '.digest' <<<"$arm64_asset")"
+
+          [[ "$tag" != null && -n "$tag" ]] || { echo "SAS release tag missing" >&2; exit 1; }
+          [[ "$amd64_url" != null && -n "$amd64_url" ]] || { echo "linux-x64.tar.gz missing" >&2; exit 1; }
+          [[ "$arm64_url" != null && -n "$arm64_url" ]] || { echo "linux-arm64.tar.gz missing" >&2; exit 1; }
+          [[ "$amd64_sha256" == sha256:* ]] || { echo "linux-x64.tar.gz digest missing" >&2; exit 1; }
+          [[ "$arm64_sha256" == sha256:* ]] || { echo "linux-arm64.tar.gz digest missing" >&2; exit 1; }
+
+          {
+            echo "tag=$tag"
+            echo "version=${tag#v}"
+            echo "amd64_url=$amd64_url"
+            echo "arm64_url=$arm64_url"
+            echo "amd64_sha256=$amd64_sha256"
+            echo "arm64_sha256=$arm64_sha256"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Skip already published scheduled release
+        id: check
+        if: github.event_name == 'schedule' && inputs.force != true
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
+          SAS_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="${IMAGE_REPOSITORY,,}:emqx-5.8.9-sas-${SAS_VERSION}"
+          if docker buildx imagetools inspect "$image" >/dev/null 2>&1; then
+            echo "${image} already exists; nothing to build"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build and push multi-architecture image
+        if: steps.check.outputs.skip != 'true'
+        env:
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
+          SAS_TAG: ${{ needs.resolve.outputs.tag }}
+          SAS_VERSION: ${{ needs.resolve.outputs.version }}
+          SAS_URL_AMD64: ${{ needs.resolve.outputs.amd64_url }}
+          SAS_URL_ARM64: ${{ needs.resolve.outputs.arm64_url }}
+          SAS_SHA256_AMD64: ${{ needs.resolve.outputs.amd64_sha256 }}
+          SAS_SHA256_ARM64: ${{ needs.resolve.outputs.arm64_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_REPOSITORY,,}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg EMQX_IMAGE="$EMQX_IMAGE" \
+            --build-arg SAS_VERSION="$SAS_TAG" \
+            --build-arg SAS_URL_AMD64="$SAS_URL_AMD64" \
+            --build-arg SAS_URL_ARM64="$SAS_URL_ARM64" \
+            --build-arg SAS_SHA256_AMD64="$SAS_SHA256_AMD64" \
+            --build-arg SAS_SHA256_ARM64="$SAS_SHA256_ARM64" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "$image:latest" \
+            -t "$image:emqx-5.8.9-sas-$SAS_VERSION" \
+            --push .

@@ -1,0 +1,25 @@
+services:
+  fmo:
+    image: ${FMO_IMAGE:-ghcr.io/your-org/fmo-emqx-sas:latest}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${MQTT_PORT}:1883"
+      - "${DASHBOARD_PORT}:18083"
+    environment:
+      SAS_SERVER_UID: "${SAS_SERVER_UID}"
+      SAS_SERVER_CALLSIGN: "${SAS_SERVER_CALLSIGN}"
+      SAS_MQTT_HOST: "${SAS_MQTT_HOST}"
+      SAS_MQTT_PORT: "${SAS_MQTT_PORT}"
+      SAS_CERT_FINGERPRINT: "${SAS_CERT_FINGERPRINT}"
+      SAS_HTTP_ADDR: "127.0.0.1"
+      SAS_HTTP_PORT: "8080"
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: "${EMQX_DASHBOARD_PASSWORD}"
+      EMQX_AUTHENTICATION: >-
+        [{mechanism = password_based, backend = http, method = post,
+          url = "http://127.0.0.1:8080/auth",
+          headers = {"Content-Type" = "application/json"},
+          body = {username = "$${username}", password = "$${password}"}}]
+    volumes:
+      - ./data/emqx:/opt/emqx/data
+      - ./data/sas:/opt/fmo-data/sas
