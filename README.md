@@ -7,7 +7,7 @@ SAS 在容器内监听 `127.0.0.1:8080`，宿主机只需要映射 MQTT 和 Dash
 ## 自动升级
 
 GitHub Actions 每 6 小时查询 [ESN SAS Releases](https://github.com/BG5ESN/fmo-server-authrozier-service/releases)。
-发现新版本后会校验 Release 资产的 SHA-256，再自动构建并推送到当前仓库的 GHCR：
+发现新版本后会校验 Release 资产的 SHA-256，再构建同一份 amd64/arm64 镜像并推送到当前仓库的 GHCR：
 
 ```text
 ghcr.io/<owner>/<repo>:latest
@@ -15,9 +15,30 @@ ghcr.io/<owner>/<repo>:emqx-5.8.9-sas-1.0.6
 ```
 
 版本标签不会被覆盖，方便回滚。工作流也支持手动指定 `sas_version`。
+每次推送 `main` 分支也会执行构建；定时任务会在所有已配置镜像仓库都存在当前版本标签时跳过。
 
 把仓库推到 GitHub 后，在仓库的 `Settings -> Actions -> General` 确认允许 Actions 写入 packages。
 GHCR 包第一次发布后，按需将包设为 public，或在部署机执行 `docker login ghcr.io`。
+
+### 同步到 Docker Hub
+
+先在 Docker Hub 创建目标仓库并生成一个具备 Read/Write 权限的 Access Token，然后在 GitHub 仓库的
+`Settings -> Secrets and variables -> Actions` 添加：
+
+| 类型 | 名称 | 示例或内容 |
+| --- | --- | --- |
+| Variable | `DOCKERHUB_REPOSITORY` | `your-name/fmo-emqx-sas` |
+| Secret | `DOCKERHUB_USERNAME` | Docker Hub 用户名 |
+| Secret | `DOCKERHUB_TOKEN` | Docker Hub Access Token，不要使用账户密码 |
+
+设置 `DOCKERHUB_REPOSITORY` 后，CI 会自动登录 Docker Hub，并将同一次构建同步发布为：
+
+```text
+your-name/fmo-emqx-sas:latest
+your-name/fmo-emqx-sas:emqx-5.8.9-sas-1.0.6
+```
+
+如果 GHCR 或 Docker Hub 任意一侧缺少当前版本，下一次定时任务会重新发布；不设置该 Variable 时，工作流保持只发布 GHCR。
 
 ## 部署
 
