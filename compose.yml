@@ -5,7 +5,7 @@ services:
     init: true
     ports:
       - "${MQTT_PORT}:1883"
-      - "${DASHBOARD_PORT}:18083"
+      - "${WEB_PORT:-18080}:8081"
     environment:
       SAS_SERVER_UID: "${SAS_SERVER_UID}"
       SAS_SERVER_CALLSIGN: "${SAS_SERVER_CALLSIGN}"
@@ -14,12 +14,16 @@ services:
       SAS_CERT_FINGERPRINT: "${SAS_CERT_FINGERPRINT}"
       SAS_HTTP_ADDR: "127.0.0.1"
       SAS_HTTP_PORT: "8080"
+      # 空字符串表示不覆盖 data/sas/config.json 里已有的集群/管理员。
+      SAS_CLUSTERS_JSON: "${SAS_CLUSTERS_JSON:-}"
+      SAS_ADMINS_JSON: "${SAS_ADMINS_JSON:-}"
+      FAS_ENABLED: "${FAS_ENABLED:-1}"
+      WEB_ENABLED: "${WEB_ENABLED:-1}"
+      WEB_LISTEN_PORT: "8081"
+      WEB_DEFAULT: "${WEB_DEFAULT:-fas}"
+      EMQX_DASHBOARD__DEFAULT_USERNAME: "${EMQX_DASHBOARD_USERNAME:-admin}"
       EMQX_DASHBOARD__DEFAULT_PASSWORD: "${EMQX_DASHBOARD_PASSWORD}"
-      EMQX_AUTHENTICATION: >-
-        [{mechanism = password_based, backend = http, method = post,
-          url = "http://127.0.0.1:8080/auth",
-          headers = {"Content-Type" = "application/json"},
-          body = {username = "$${username}", password = "$${password}"}}]
     volumes:
       - ./data/emqx:/opt/emqx/data
       - ./data/sas:/opt/fmo-data/sas
+      - ./data/fas:/opt/fmo-data/fas

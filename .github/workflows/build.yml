@@ -1,4 +1,4 @@
-name: Build FMO EMQX + SAS
+name: Build FMO EMQX + SAS + FAS
 
 on:
   push:
@@ -27,20 +27,26 @@ concurrency:
 
 env:
   SAS_REPO: BG5ESN/fmo-server-authrozier-service
+  FAS_META_URL: https://bg5esn.com/share/fmo/fas.json
   EMQX_IMAGE: emqx/emqx:5.8.9
 
 jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.release.outputs.tag }}
-      version: ${{ steps.release.outputs.version }}
-      amd64_url: ${{ steps.release.outputs.amd64_url }}
-      arm64_url: ${{ steps.release.outputs.arm64_url }}
-      amd64_sha256: ${{ steps.release.outputs.amd64_sha256 }}
-      arm64_sha256: ${{ steps.release.outputs.arm64_sha256 }}
+      sas_tag: ${{ steps.release.outputs.sas_tag }}
+      sas_version: ${{ steps.release.outputs.sas_version }}
+      sas_amd64_url: ${{ steps.release.outputs.sas_amd64_url }}
+      sas_arm64_url: ${{ steps.release.outputs.sas_arm64_url }}
+      sas_amd64_sha256: ${{ steps.release.outputs.sas_amd64_sha256 }}
+      sas_arm64_sha256: ${{ steps.release.outputs.sas_arm64_sha256 }}
+      fas_version: ${{ steps.release.outputs.fas_version }}
+      fas_amd64_url: ${{ steps.release.outputs.fas_amd64_url }}
+      fas_arm64_url: ${{ steps.release.outputs.fas_arm64_url }}
+      fas_amd64_sha256: ${{ steps.release.outputs.fas_amd64_sha256 }}
+      fas_arm64_sha256: ${{ steps.release.outputs.fas_arm64_sha256 }}
     steps:
-      - name: Resolve SAS release
+      - name: Resolve SAS and FAS releases
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,6 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [[ -n "$REQUESTED_VERSION" ]]; then
             [[ "$REQUESTED_VERSION" == v* ]] || REQUESTED_VERSION="v$REQUESTED_VERSION"
             release_json="$(gh api "repos/${SAS_REPO}/releases/tags/${REQUESTED_VERSION}")"
@@ -55,28 +62,59 @@ jobs:
             release_json="$(gh api "repos/${SAS_REPO}/releases/latest")"
           fi
 
-          tag="$(jq -r '.tag_name' <<<"$release_json")"
+          sas_tag="$(jq -r '.tag_name' <<<"$release_json")"
           amd64_asset="$(jq -c '.assets[] | select(.name == "linux-x64.tar.gz")' <<<"$release_json" | head -n1)"
           arm64_asset="$(jq -c '.assets[] | select(.name == "linux-arm64.tar.gz")' <<<"$release_json" | head -n1)"
-          amd64_url="$(jq -r '.browser_download_url' <<<"$amd64_asset")"
-          arm64_url="$(jq -r '.browser_download_url' <<<"$arm64_asset")"
-          amd64_sha256="$(jq -r '.digest' <<<"$amd64_asset")"
-          arm64_sha256="$(jq -r '.digest' <<<"$arm64_asset")"
+          sas_amd64_url="$(jq -r '.browser_download_url' <<<"$amd64_asset")"
+          sas_arm64_url="$(jq -r '.browser_download_url' <<<"$arm64_asset")"
+          sas_amd64_sha256="$(jq -r '.digest' <<<"$amd64_asset")"
+          sas_arm64_sha256="$(jq -r '.digest' <<<"$arm64_asset")"
 
-          [[ "$tag" != null && -n "$tag" ]] || { echo "SAS release tag missing" >&2; exit 1; }
-          [[ "$amd64_url" != null && -n "$amd64_url" ]] || { echo "linux-x64.tar.gz missing" >&2; exit 1; }
-          [[ "$arm64_url" != null && -n "$arm64_url" ]] || { echo "linux-arm64.tar.gz missing" >&2; exit 1; }
-          [[ "$amd64_sha256" == sha256:* ]] || { echo "linux-x64.tar.gz digest missing" >&2; exit 1; }
-          [[ "$arm64_sha256" == sha256:* ]] || { echo "linux-arm64.tar.gz digest missing" >&2; exit 1; }
+          [[ "$sas_tag" != null && -n "$sas_tag" ]] || { echo "SAS release tag missing" >&2; exit 1; }
+          [[ "$sas_amd64_url" != null && -n "$sas_amd64_url" ]] || { echo "linux-x64.tar.gz missing" >&2; exit 1; }
+          [[ "$sas_arm64_url" != null && -n "$sas_arm64_url" ]] || { echo "linux-arm64.tar.gz missing" >&2; exit 1; }
+          [[ "$sas_amd64_sha256" == sha256:* ]] || { echo "linux-x64.tar.gz digest missing" >&2; exit 1; }
+          [[ "$sas_arm64_sha256" == sha256:* ]] || { echo "linux-arm64.tar.gz digest missing" >&2; exit 1; }
+
+          fas_json="$(curl -fsSL --retry 3 --retry-all-errors "${FAS_META_URL}?t=$(date +%s)")"
+          fas_version="$(jq -r '.version // empty' <<<"$fas_json")"
+          fas_amd64_url="$(jq -r '.assets["linux-x64"] // empty' <<<"$fas_json")"
+          fas_arm64_url="$(jq -r '.assets["linux-arm64"] // empty' <<<"$fas_json")"
+
+          [[ -n "$fas_version" ]] || { echo "FAS version missing from $FAS_META_URL" >&2; exit 1; }
+          [[ -n "$fas_amd64_url" ]] || { echo "FAS linux-x64 asset missing" >&2; exit 1; }
+          [[ -n "$fas_arm64_url" ]] || { echo "FAS linux-arm64 asset missing" >&2; exit 1; }
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          curl -fsSL --retry 3 --retry-all-errors "$fas_amd64_url" -o "$tmp/fas-amd64.tar.gz"
+          curl -fsSL --retry 3 --retry-all-errors "$fas_arm64_url" -o "$tmp/fas-arm64.tar.gz"
+          fas_amd64_sha256="sha256:$(sha256sum "$tmp/fas-amd64.tar.gz" | awk '{print $1}')"
+          fas_arm64_sha256="sha256:$(sha256sum "$tmp/fas-arm64.tar.gz" | awk '{print $1}')"
 
           {
-            echo "tag=$tag"
-            echo "version=${tag#v}"
-            echo "amd64_url=$amd64_url"
-            echo "arm64_url=$arm64_url"
-            echo "amd64_sha256=$amd64_sha256"
-            echo "arm64_sha256=$arm64_sha256"
+            echo "sas_tag=$sas_tag"
+            echo "sas_version=${sas_tag#v}"
+            echo "sas_amd64_url=$sas_amd64_url"
+            echo "sas_arm64_url=$sas_arm64_url"
+            echo "sas_amd64_sha256=$sas_amd64_sha256"
+            echo "sas_arm64_sha256=$sas_arm64_sha256"
+            echo "fas_version=$fas_version"
+            echo "fas_amd64_url=$fas_amd64_url"
+            echo "fas_arm64_url=$fas_arm64_url"
+            echo "fas_amd64_sha256=$fas_amd64_sha256"
+            echo "fas_arm64_sha256=$fas_arm64_sha256"
           } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Upstream versions resolved"
+            echo ""
+            echo "| Component | Version |"
+            echo "| --- | --- |"
+            echo "| SAS | \`$sas_tag\` |"
+            echo "| FAS | \`v$fas_version\` |"
+            echo "| EMQX | \`5.8.9\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: resolve
@@ -125,10 +163,13 @@ jobs:
         env:
           GHCR_REPOSITORY: ghcr.io/${{ github.repository }}
           DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
-          SAS_VERSION: ${{ needs.resolve.outputs.version }}
+          SAS_VERSION: ${{ needs.resolve.outputs.sas_version }}
+          FAS_VERSION: ${{ needs.resolve.outputs.fas_version }}
         run: |
           set -euo pipefail
-          version_tag="emqx-5.8.9-sas-${SAS_VERSION}"
+          # The immutable tag includes both SAS and FAS versions. If either
+          # upstream changes, this tag changes and the scheduled build reruns.
+          version_tag="emqx-5.8.9-sas-${SAS_VERSION}-fas-${FAS_VERSION}"
           images=("${GHCR_REPOSITORY,,}:$version_tag")
           if [[ -n "$DOCKERHUB_REPOSITORY" ]]; then
             images+=("${DOCKERHUB_REPOSITORY,,}:$version_tag")
@@ -153,17 +194,22 @@ jobs:
         env:
           GHCR_REPOSITORY: ghcr.io/${{ github.repository }}
           DOCKERHUB_REPOSITORY: ${{ vars.DOCKERHUB_REPOSITORY }}
-          SAS_TAG: ${{ needs.resolve.outputs.tag }}
-          SAS_VERSION: ${{ needs.resolve.outputs.version }}
-          SAS_URL_AMD64: ${{ needs.resolve.outputs.amd64_url }}
-          SAS_URL_ARM64: ${{ needs.resolve.outputs.arm64_url }}
-          SAS_SHA256_AMD64: ${{ needs.resolve.outputs.amd64_sha256 }}
-          SAS_SHA256_ARM64: ${{ needs.resolve.outputs.arm64_sha256 }}
+          SAS_TAG: ${{ needs.resolve.outputs.sas_tag }}
+          SAS_VERSION: ${{ needs.resolve.outputs.sas_version }}
+          SAS_URL_AMD64: ${{ needs.resolve.outputs.sas_amd64_url }}
+          SAS_URL_ARM64: ${{ needs.resolve.outputs.sas_arm64_url }}
+          SAS_SHA256_AMD64: ${{ needs.resolve.outputs.sas_amd64_sha256 }}
+          SAS_SHA256_ARM64: ${{ needs.resolve.outputs.sas_arm64_sha256 }}
+          FAS_VERSION: ${{ needs.resolve.outputs.fas_version }}
+          FAS_URL_AMD64: ${{ needs.resolve.outputs.fas_amd64_url }}
+          FAS_URL_ARM64: ${{ needs.resolve.outputs.fas_arm64_url }}
+          FAS_SHA256_AMD64: ${{ needs.resolve.outputs.fas_amd64_sha256 }}
+          FAS_SHA256_ARM64: ${{ needs.resolve.outputs.fas_arm64_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
           ghcr_image="${GHCR_REPOSITORY,,}"
-          version_tag="emqx-5.8.9-sas-${SAS_VERSION}"
+          version_tag="emqx-5.8.9-sas-${SAS_VERSION}-fas-${FAS_VERSION}"
           tags=(
             --tag "$ghcr_image:latest"
             --tag "$ghcr_image:$version_tag"
@@ -184,6 +230,11 @@ jobs:
             --build-arg SAS_URL_ARM64="$SAS_URL_ARM64" \
             --build-arg SAS_SHA256_AMD64="$SAS_SHA256_AMD64" \
             --build-arg SAS_SHA256_ARM64="$SAS_SHA256_ARM64" \
+            --build-arg FAS_VERSION="$FAS_VERSION" \
+            --build-arg FAS_URL_AMD64="$FAS_URL_AMD64" \
+            --build-arg FAS_URL_ARM64="$FAS_URL_ARM64" \
+            --build-arg FAS_SHA256_AMD64="$FAS_SHA256_AMD64" \
+            --build-arg FAS_SHA256_ARM64="$FAS_SHA256_ARM64" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             "${tags[@]}" \
             --push .

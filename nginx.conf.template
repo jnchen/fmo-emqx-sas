@@ -1,0 +1,79 @@
+worker_processes 1;
+pid /tmp/fmo-nginx/nginx.pid;
+error_log /dev/stderr warn;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    access_log /dev/stdout;
+    client_max_body_size 10m;
+
+    # nginx runs as the unprivileged emqx user, so keep all temp files in /tmp.
+    client_body_temp_path /tmp/fmo-nginx/body;
+    proxy_temp_path       /tmp/fmo-nginx/proxy;
+    fastcgi_temp_path     /tmp/fmo-nginx/fastcgi;
+    uwsgi_temp_path       /tmp/fmo-nginx/uwsgi;
+    scgi_temp_path        /tmp/fmo-nginx/scgi;
+
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
+
+    # The selector cookie decides which local app gets the request.
+    # No DNS / no subpath needed: both apps still see their normal root paths.
+    map $cookie_fmoapp $fmo_backend {
+        default __DEFAULT_BACKEND__;
+        fas     __FAS_BACKEND__;
+        emqx    __EMQX_BACKEND__;
+    }
+
+    server {
+        listen __WEB_PORT__;
+
+        # Keep redirects relative so browsers stay on the published host port
+        # instead of being sent to the internal container port.
+        absolute_redirect off;
+        port_in_redirect off;
+
+        # Tiny switcher page: /__fmo
+        location = /__fmo {
+            default_type text/html;
+            return 200 '__SWITCHER_HTML__';
+        }
+
+        location = /__fmo/ {
+            return 302 /__fmo;
+        }
+
+        location = /__fmo/fas {
+            add_header Set-Cookie "fmoapp=fas; Path=/; HttpOnly; SameSite=Lax";
+            return 302 /?_fmo=fas&_=$request_id;
+        }
+
+        location = /__fmo/emqx {
+            add_header Set-Cookie "fmoapp=emqx; Path=/; HttpOnly; SameSite=Lax";
+            return 302 /?_fmo=emqx&_=$request_id;
+        }
+
+        location / {
+            proxy_pass http://$fmo_backend$request_uri;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_buffering off;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+        }
+    }
+}
