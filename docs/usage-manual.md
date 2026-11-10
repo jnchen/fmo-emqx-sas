@@ -200,6 +200,15 @@ compose 部署时对应 `./data/emqx`、`./data/sas`、`./data/fas`。
 
 ## 8. 常见问题
 
+**Q: 启动日志刷 `Permission denied`,容器反复重启?**
+绑定挂载的数据目录属主不是 uid 1000(容器内 `emqx` 用户)。命名卷会自动继承镜像属主,绑定挂载不会。修复:
+```bash
+docker rm -f fmo
+sudo chown -R 1000:1000 <你挂载的宿主机目录>   # 例如 /opt/fmo/data 或 ./data
+# 再用原命令重新启动
+```
+新版镜像会在这种情况下直接打印带修复命令的明确错误,不再刷屏。
+
 **Q: 打开 `/` 是 404 或空白?**
 先访问 `http://IP:端口/__fmo` 切换一次;仍不行看 `docker logs fmo` 里 nginx 是否启动。
 

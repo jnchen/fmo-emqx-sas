@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-config="${SAS_CONFIG_FILE:-/opt/fmo-data/sas/config.json}"
-config_dir="$(dirname "$config")"
-roots_dir="${SAS_ROOTS_DIR:-/opt/fmo-data/sas/roots}"
-mkdir -p "$config_dir" "$roots_dir"
-
 log() { printf '[fmo] %s\n' "$*"; }
 die() { printf '[fmo] ERROR: %s\n' "$*" >&2; exit 64; }
 need() { [[ -n "${!1:-}" ]] || die "$1 is required"; }
+
+# Data dirs must be writable by the container user (emqx, uid 1000).
+# Named volumes inherit ownership from the image automatically; bind mounts
+# keep host ownership, so Linux hosts need `chown -R 1000:1000 <host-dir>`.
+ensure_dir_writable() {
+  local d="$1"
+  mkdir -p "$d" 2>/dev/null || true
+  if ! touch "$d/.fmo-writable" 2>/dev/null; then
+    die "data directory not writable: $d (uid $(id -u) $(id -un))
+  You probably bind-mounted it from a host dir owned by another user.
+  Fix on the host, then recreate the container:
+      chown -R 1000:1000 <host-dir>
+  Or switch to named volumes (required on Windows/macOS Docker Desktop)."
+  fi
+  rm -f "$d/.fmo-writable"
+}
 
 # Random alphanumeric string. head finishes by byte count (no SIGPIPE),
 # so this is safe under `set -o pipefail` unlike `tr ... | head`.
@@ -27,6 +38,12 @@ json_array_or_empty() {
 
 json_array_or_empty SAS_CLUSTERS_JSON "${SAS_CLUSTERS_JSON:-}"
 json_array_or_empty SAS_ADMINS_JSON "${SAS_ADMINS_JSON:-}"
+
+config="${SAS_CONFIG_FILE:-/opt/fmo-data/sas/config.json}"
+config_dir="$(dirname "$config")"
+roots_dir="${SAS_ROOTS_DIR:-/opt/fmo-data/sas/roots}"
+ensure_dir_writable "$config_dir"
+ensure_dir_writable "$roots_dir"
 
 has_init_env=false
 for v in SAS_SERVER_UID SAS_SERVER_CALLSIGN SAS_MQTT_HOST SAS_CERT_FINGERPRINT; do
@@ -319,7 +336,7 @@ if [[ "${FAS_ENABLED:-1}" == "1" ]]; then
   if [[ "${WEB_ENABLED:-1}" == "1" ]]; then
     export EMQX_MONITOR_TRUST_PROXY="${EMQX_MONITOR_TRUST_PROXY:-1}"
   fi
-  mkdir -p "$(dirname "$EMQX_MONITOR_DB")"
+  ensure_dir_writable "$(dirname "$EMQX_MONITOR_DB")"
 
   if [[ "${FAS_AUTOCONFIG:-1}" == "1" && -n "$fas_api_key" && ! -f "$EMQX_MONITOR_DB" ]]; then
     # First boot: save connection config before the service starts. The
