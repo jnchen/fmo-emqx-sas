@@ -45,7 +45,7 @@ FAS 和 EMQX Dashboard 都不支持子路径,所以用 **Cookie 切换**,不是�
 
 | 过去手动做 | 现在自动做 |
 | --- | --- |
-| 上 Dashboard 创建 API Key/Secret | 生成专用 Key,经 EMQX `api_key.bootstrap_file` 启动时注册(存于 `/opt/fmo-data/emqx-api-key`) |
+| 上 Dashboard 创建 API Key/Secret | 生成专用 Key,经 EMQX `api_key.bootstrap_file` 启动时注册(存于 `data/fas/emqx-api-key`,随 FAS 卷持久化) |
 | FAS 配置页填 EMQX 地址 + Key | 自动执行官方 `--configure`:写连接 + 建 `FMO/RAW` 统计 bridge |
 | 打开 FAS 初始化管理员 | 自动创建:用户名 `FAS_ADMIN_USERNAME`(默认 `admin`),密码 `FAS_ADMIN_PASSWORD`,不填则随机生成 |
 
@@ -191,7 +191,7 @@ docker compose up -d    # 或按 docker run 的方式用新 tag 重建
 # 数据都在这三个卷/目录里,备份就备份它们
 /opt/emqx/data     EMQX 数据、规则
 /opt/fmo-data/sas  SAS 配置 + Root CA + CRL 缓存
-/opt/fmo-data/fas  FAS 数据库(管理员、审计、黑名单)
+/opt/fmo-data/fas  FAS 数据库(管理员、审计、黑名单、EMQX 连接) + 初始密码文件 + API Key
 ```
 
 compose 部署时对应 `./data/emqx`、`./data/sas`、`./data/fas`。

@@ -172,7 +172,10 @@ fas_pid=""
 fas_api_key=""
 fas_api_secret=""
 if [[ "${FAS_ENABLED:-1}" == "1" && "${FAS_AUTOCONFIG:-1}" == "1" ]]; then
-  keyfile=/opt/fmo-data/emqx-api-key
+  # Keep the key inside the FAS data dir so all persistent state lives
+  # under the three mountable volumes (emqx data / sas / fas).
+  keyfile="${EMQX_MONITOR_DB:-/opt/fmo-data/fas/fmo-audit-service.db}"
+  keyfile="$(dirname "$keyfile")/emqx-api-key"
   if [[ -n "${FAS_EMQX_API_KEY:-}" || -n "${FAS_EMQX_API_SECRET:-}" ]]; then
     [[ -n "${FAS_EMQX_API_KEY:-}" && -n "${FAS_EMQX_API_SECRET:-}" ]] \
       || die "FAS_EMQX_API_KEY and FAS_EMQX_API_SECRET must be set together"

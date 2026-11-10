@@ -115,7 +115,7 @@ docker compose -f compose.yml logs -f fmo
 | --- | --- |
 | `/opt/emqx/data` | EMQX 数据、配置、规则引擎 |
 | `/opt/fmo-data/sas` | `config.json`、`roots/`（Root CA）、`roles/`、`crl/` 缓存 |
-| `/opt/fmo-data/fas` | FAS SQLite 数据库、管理员、审计记录、黑名单 |
+| `/opt/fmo-data/fas` | FAS SQLite 数据库（管理员、审计、黑名单、EMQX 连接）、`admin-password.txt`、`emqx-api-key` |
 
 > 三个数据目录都要持久化。删除 `fmo-sas` 卷会导致 SAS 重新初始化；删除 `fmo-fas` 卷会丢失审计与黑名单数据。
 
@@ -239,7 +239,7 @@ SAS 的 8080 不要暴露到公网；不同主机时请走内网/VPN/反向代�
 
 容器第一次启动时（`FAS_AUTOCONFIG=1`，默认开）会自动完成原来需要手动做的全部三步：
 
-1. 生成一对专用 EMQX API Key/Secret，通过 EMQX 的 `api_key.bootstrap_file` 在启动时注册（保存在 `/opt/fmo-data/emqx-api-key`，重启不丢）。
+1. 生成一对专用 EMQX API Key/Secret，通过 EMQX 的 `api_key.bootstrap_file` 在启动时注册（保存在 `data/fas/emqx-api-key`，随 FAS 数据卷持久化）。
 2. 等 EMQX 就绪后自动执行 FAS 的 `--configure`：写入连接配置并创建 `FMO/RAW` 主题统计 bridge。只在新库第一次启动时做一次，已有 FAS 数据库不会被改动。
 3. FAS 起来后自动创建管理员：
    - 用户名 = `FAS_ADMIN_USERNAME`（默认 `admin`）
