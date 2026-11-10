@@ -312,6 +312,13 @@ if [[ "${FAS_ENABLED:-1}" == "1" ]]; then
   # container IP instead; fas_post_start refreshes that every boot.
   export EMQX_MONITOR_WEBHOOK_URL="${EMQX_MONITOR_WEBHOOK_URL:-http://127.0.0.1:${EMQX_MONITOR_PORT}/api/ingest}"
   export DOTNET_RUNNING_IN_CONTAINER="${DOTNET_RUNNING_IN_CONTAINER:-true}"
+  # FAS is behind our nginx when WEB_ENABLED=1: trust X-Forwarded-For so the
+  # login lockout sees real client IPs. nginx overwrites that header with
+  # $remote_addr, so it cannot be spoofed. With WEB_ENABLED=0 (direct access)
+  # keep FAS's secure default (TCP peer IP, ignore the header).
+  if [[ "${WEB_ENABLED:-1}" == "1" ]]; then
+    export EMQX_MONITOR_TRUST_PROXY="${EMQX_MONITOR_TRUST_PROXY:-1}"
+  fi
   mkdir -p "$(dirname "$EMQX_MONITOR_DB")"
 
   if [[ "${FAS_AUTOCONFIG:-1}" == "1" && -n "$fas_api_key" && ! -f "$EMQX_MONITOR_DB" ]]; then

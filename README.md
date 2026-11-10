@@ -164,6 +164,7 @@ docker compose -f compose.yml logs -f fmo
 | `EMQX_MONITOR_PORT` | `9527` | FAS 监听端口 |
 | `EMQX_MONITOR_DB` | `/opt/fmo-data/fas/fmo-audit-service.db` | FAS 数据库路径 |
 | `EMQX_MONITOR_WEBHOOK_URL` | `http://127.0.0.1:9527/api/ingest` | EMQX 规则回传 FAS 的地址 |
+| `EMQX_MONITOR_TRUST_PROXY` | `WEB_ENABLED=1` 时为 `1` | 让 FAS 信任 nginx 传入的真实客户端 IP（登录锁定/审计用）；nginx 会覆盖该头，客户端无法伪造 |
 
 ## 多 FMO 共用一个 SAS（集群）
 
