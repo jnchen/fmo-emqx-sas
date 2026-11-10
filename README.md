@@ -223,6 +223,61 @@ docker restart fmo
 
 > 不要同时使用 `SAS_CLUSTERS_JSON` 和 CLI：环境变量会在下次启动时覆盖 CLI 写入的列表。
 
+## 多实例互联（EMQX 集群）
+
+多台 FMO 实例（同一台服务器上的多个容器，或多台服务器）可以组成一个 EMQX 集群：**设备连任意一个节点，消息在所有节点间自动路由**，任一节点的 Dashboard / FAS 看到的是整个集群。
+
+通过环境变量即可组建（镜像无需改动，`EMQX_*` 变量直接透传给 EMQX）：
+
+```bash
+# 1) 同一台服务器:先建一个共享网络
+docker network create fmo-net
+
+# 2) 节点 A(带 FAS,整个集群只留一个)
+docker run -d --name fmo_a --network fmo-net --network-alias fmo-a.fmo.net \
+  -p 43926:1883 -p 43925:8081 \
+  -v /HAM/group-fmo/a/emqx:/opt/emqx/data:z \
+  -v /HAM/group-fmo/a/sas:/opt/fmo-data/sas:z \
+  -v /HAM/group-fmo/a/fas:/opt/fmo-data/fas:z \
+  -e EMQX_NODE__NAME=emqx@fmo-a.fmo.net \
+  -e EMQX_CLUSTER__DISCOVERY_STRATEGY=static \
+  -e EMQX_CLUSTER__STATIC__SEEDS='["emqx@fmo-a.fmo.net","emqx@fmo-b.fmo.net"]' \
+  -e EMQX_NODE__COOKIE=换一个集群专用密钥 \
+  -e SAS_SERVER_UID=947 -e SAS_SERVER_CALLSIGN=BA4JPR \
+  -e SAS_MQTT_HOST=fmo.br4in.cn -e SAS_MQTT_PORT=43926 \
+  -e SAS_CERT_FINGERPRINT=... \
+  -e EMQX_DASHBOARD_PASSWORD=... \
+  ghcr.io/jnchen/fmo-emqx-sas:latest
+
+# 3) 节点 B(以及更多):同样的 SEEDS 和 COOKIE,FAS 关掉
+docker run -d --name fmo_b --network fmo-net --network-alias fmo-b.fmo.net \
+  -p 43927:1883 -p 43928:8081 \
+  -v /HAM/group-fmo/b/emqx:/opt/emqx/data:z \
+  -v /HAM/group-fmo/b/sas:/opt/fmo-data/sas:z \
+  -v /HAM/group-fmo/b/fas:/opt/fmo-data/fas:z \
+  -e EMQX_NODE__NAME=emqx@fmo-b.fmo.net \
+  -e EMQX_CLUSTER__DISCOVERY_STRATEGY=static \
+  -e EMQX_CLUSTER__STATIC__SEEDS='["emqx@fmo-a.fmo.net","emqx@fmo-b.fmo.net"]' \
+  -e EMQX_NODE__COOKIE=同一个集群密钥 \
+  -e FAS_ENABLED=0 \
+  -e SAS_SERVER_UID=948 -e SAS_SERVER_CALLSIGN=BD4XYZ \
+  -e SAS_MQTT_HOST=fmo2.br4in.cn -e SAS_MQTT_PORT=43927 \
+  -e SAS_CERT_FINGERPRINT=... \
+  ghcr.io/jnchen/fmo-emqx-sas:latest
+```
+
+验证：`docker exec fmo_a emqx ctl cluster status` 应列出所有节点；向 B 节点发布 `FMO/RAW`，A 节点的 FAS 能看到即通。
+
+**规则与注意：**
+
+- **节点名必须带点**（Erlang 长名要求）：`emqx@fmo-a.fmo.net` 可以，`emqx@fmo-a` 不行（无法组网，且 `emqx ctl` 都会 ping 不通）。
+- **节点名写进 emqx 数据**：改节点名必须清空该实例的 `emqx` 数据目录（认证器/API Key/统计桥每次启动自动重建，代价很小）。
+- **所有节点相同的 `EMQX_NODE__COOKIE`**，视为集群凭证，不要泄露。
+- **FAS 只在一个节点启用**（其余 `FAS_ENABLED=0`）：规则和 bridge 是集群全局的，多个 FAS 会互相冲突；单 FAS 监控整个集群。
+- **每节点 SAS 保持本地认证**（零信任不变）：设备连哪个节点，就由那个节点本地的 SAS 验证，五项身份匹配照旧。
+- Dashboard 连任意节点都是全集群视图，API Key 也是全集群通用。
+- 跨服务器组网：节点间需互通 TCP **4370**（Erlang 分布）和 **5369**（集群 RPC），节点名用可互析的域名或公网 IP（本身带点）。
+
 ### 其它 FMO 的 EMQX 怎么指向这个 SAS
 
 在其它 FMO 服务器的 EMQX 中配置 HTTP 认证：

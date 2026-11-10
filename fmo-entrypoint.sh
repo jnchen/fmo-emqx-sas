@@ -214,6 +214,17 @@ if [[ "${FAS_ENABLED:-1}" == "1" && "${FAS_AUTOCONFIG:-1}" == "1" ]]; then
   export EMQX_API_KEY__BOOTSTRAP_FILE="$keyfile"
 fi
 
+# Compose-friendly dashboard credential names for plain `docker run`:
+# .env/compose use EMQX_DASHBOARD_PASSWORD / _USERNAME, while EMQX itself
+# only reads EMQX_DASHBOARD__DEFAULT_PASSWORD / _USERNAME (effective at the
+# FIRST initialization of the EMQX data dir only).
+if [[ -z "${EMQX_DASHBOARD__DEFAULT_PASSWORD:-}" && -n "${EMQX_DASHBOARD_PASSWORD:-}" ]]; then
+  export EMQX_DASHBOARD__DEFAULT_PASSWORD="$EMQX_DASHBOARD_PASSWORD"
+fi
+if [[ -z "${EMQX_DASHBOARD__DEFAULT_USERNAME:-}" && -n "${EMQX_DASHBOARD_USERNAME:-}" ]]; then
+  export EMQX_DASHBOARD__DEFAULT_USERNAME="$EMQX_DASHBOARD_USERNAME"
+fi
+
 log "starting EMQX"
 /usr/bin/docker-entrypoint.sh emqx foreground &
 emqx_pid=$!

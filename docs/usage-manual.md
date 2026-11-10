@@ -72,6 +72,29 @@ docker exec fmo cat /opt/fmo-data/fas/admin-password.txt
 
 FAS 日常用途:排行榜、主题统计(反查干扰源)、在线列表、黑名单、身份审计、健康监控。
 
+## 2.5 多实例互联(EMQX 集群,可选)
+
+想让设备"连哪一个节点都能和其他节点互联"?把多套实例组成一个 EMQX 集群即可——主题空间全集群共享,B 节点上的设备发的语音,A 节点上的设备直接收到。
+
+只需要给现有 `docker run` 追加几行(详见 README「多实例互联」一节的完整命令):
+
+```bash
+--network fmo-net --network-alias fmo-a.fmo.net \   # 每节点不同别名,必须带点
+-e EMQX_NODE__NAME=emqx@fmo-a.fmo.net \             # 每节点不同,必须带点
+-e EMQX_CLUSTER__DISCOVERY_STRATEGY=static \
+-e EMQX_CLUSTER__STATIC__SEEDS='["emqx@fmo-a.fmo.net","emqx@fmo-b.fmo.net"]' \
+-e EMQX_NODE__COOKIE=集群专用密钥 \                  # 所有节点相同
+```
+
+记住四条:
+
+1. **除一个节点外,其余全部 `FAS_ENABLED=0`**(规则是集群全局的,多个 FAS 会冲突)
+2. **节点名必须带点**,`emqx@fmo-a` 这种裸名组不了网
+3. **改节点名要清空该实例的 `emqx` 数据目录**(已有实例改造成集群时,先备份再清空,起来后自动重建)
+4. 每个节点仍用自己的 UID/呼号/指纹,设备连谁就由谁本地认证,五项匹配不变
+
+验证:`docker exec fmo_a emqx ctl cluster status` 列出全部节点即成功。
+
 ---
 
 ## 3. EMQX Dashboard 用来干什么
@@ -216,7 +239,7 @@ sudo chown -R 1000:1000 <你挂载的宿主机目录>   # 例如 /opt/fmo/data �
 `FAS_ENABLED` 被设成 0 了,或 FAS 进程崩了,看日志。
 
 **Q: Dashboard 登录不上?**
-账号 `admin`,密码是 `EMQX_DASHBOARD_PASSWORD`;密码改过就以改过的为准。
+账号固定 `admin`。注意 `EMQX_DASHBOARD_PASSWORD` **只在 emqx 数据目录第一次初始化时生效**:目录已有旧数据时该变量被忽略,密码是最早初始化时的那个(出厂是 `public`,首次登录会强制改密)。改密码最简单的方式就是登录 Dashboard 后在界面里改;或重置:`docker rm -f` 后清空 `data/emqx` 目录再用新密码启动(认证器/API Key/统计桥每次启动都会自动重建,重置代价很小)。
 
 **Q: 设备连上 MQTT 但立刻被踢 / deny?**
 见第 4 节排查顺序,90% 是五项里有一样对不上(尤其端口)。
