@@ -39,40 +39,36 @@ FAS 和 EMQX Dashboard 都不支持子路径,所以用 **Cookie 切换**,不是�
 
 ---
 
-## 2. FAS 首次配置(只需要做一次)
+## 2. FAS:默认全自动,启动即用,无需配置
 
-### 第 1 步:初始化 FAS 管理员
+镜像默认开启 `FAS_AUTOCONFIG=1`,容器**第一次启动**时自动完成过去需要手动做的全部三步:
 
-1. 打开 `http://1.2.3.4:18080/__fmo/fas`
-2. 自动跳到初始化页,设置 FAS 管理员账号密码(这是 FAS 自己的账号,和 EMQX 无关)
+| 过去手动做 | 现在自动做 |
+| --- | --- |
+| 上 Dashboard 创建 API Key/Secret | 生成专用 Key,经 EMQX `api_key.bootstrap_file` 启动时注册(存于 `/opt/fmo-data/emqx-api-key`) |
+| FAS 配置页填 EMQX 地址 + Key | 自动执行官方 `--configure`:写连接 + 建 `FMO/RAW` 统计 bridge |
+| 打开 FAS 初始化管理员 | 自动创建:用户名 `FAS_ADMIN_USERNAME`(默认 `admin`),密码 `FAS_ADMIN_PASSWORD`,不填则随机生成 |
 
-### 第 2 步:在 EMQX Dashboard 创建 API Key
+**你要做的只有一件事:拿到初始密码登录。**
 
-1. 打开 `http://1.2.3.4:18080/__fmo/emqx`
-2. 登录:用户名 `admin`,密码 = `.env` 里的 `EMQX_DASHBOARD_PASSWORD`
-3. 左侧 `系统设置 → API 密钥 → 创建`,得到 **API Key** 和 **Secret**(Secret 只显示一次,先复制)
+```bash
+docker logs fmo 2>&1 | grep 'FAS admin created'
+# 输出形如: [fmo] FAS admin created: username=admin password=Xx3...(also saved to ...)
+# 或者直接读文件:
+docker exec fmo cat /opt/fmo-data/fas/admin-password.txt
+```
 
-### 第 3 步:回 FAS 填连接信息
+然后打开 `http://1.2.3.4:18080/__fmo/fas` 登录即可。首次启动从拉起到 FAS 完全就绪约需 1 分钟(要等 EMQX 起来完成自动配置),之后每次重启不再重复配置。
 
-1. 切回 FAS(`http://1.2.3.4:18080/__fmo/fas`),用第 1 步的账号登录
-2. 进入 `配置` 页,填:
+想自定义密码:在 `.env` 里设 `FAS_ADMIN_PASSWORD=你的密码`(至少 8 位),首次启动即用它建号。
 
-| 配置项 | 填什么 | 注意 |
-| --- | --- | --- |
-| EMQX 地址 | `http://127.0.0.1:18083` | **必须填这个**。它们在同一个容器里,填 `1.2.3.4:18080` 或 IP 是错的 |
-| API Key / Secret | 第 2 步创建的 | |
-| 主题统计 | 默认 `FMO/RAW` | 一般不用改 |
-| 身份控制 | 默认开启 | 包头身份≠连接身份自动拉黑,建议保持开 |
-| Webhook | `http://127.0.0.1:9527/api/ingest` | 镜像已内置默认,页面若要求填就照抄 |
+**验证自动配置成功:**
 
-3. 保存后 FAS 显示连接成功、在线列表开始出数据,配置完成。
+- 启动日志出现 `FAS autoconfigured:` 且 `[3/3]` 通过
+- FAS 登录后 `配置` 页显示已连接、`在线列表`/`主题统计` 有数据
+- 若日志出现 `WARNING: FAS autoconfigure failed`,多为 EMQX 未就绪,`docker restart fmo` 再试一次即可(已有数据不会重复初始化)
 
-> 不想点页面也可以命令行一次配完(容器名按实际改):
-> ```bash
-> docker exec -e EMQX_URL=http://127.0.0.1:18083 \
->   -e EMQX_API_KEY=<key> -e EMQX_API_SECRET=<secret> \
->   fmo /opt/fmo-fas/fmo-audit-service --configure
-> ```
+**想完全手动?** 设 `FAS_AUTOCONFIG=0`,恢复原始三步:① FAS 初始化页建管理员 → ② Dashboard(`系统设置 → API 密钥`)创建 Key/Secret → ③ FAS 配置页填 EMQX 地址 **`http://127.0.0.1:18083`**(同容器内部地址,别填 IP)+ Key/Secret,webhook 填 `http://127.0.0.1:9527/api/ingest`。
 
 FAS 日常用途:排行榜、主题统计(反查干扰源)、在线列表、黑名单、身份审计、健康监控。
 

@@ -158,6 +158,9 @@ docker compose -f compose.yml logs -f fmo
 | `EMQX_DASHBOARD_PASSWORD` | 必填 | Dashboard 密码 |
 | `EMQX_AUTHENTICATION__1` | 镜像内置 | 想覆盖认证器时再设置 |
 | `FAS_ENABLED` | `1` | `0` 关闭 FAS |
+| `FAS_AUTOCONFIG` | `1` | `0` 关闭自动配置（API Key 引导 + 自动 `--configure` + 自动建管理员） |
+| `FAS_ADMIN_USERNAME` | `admin` | 自动创建的 FAS 管理员用户名 |
+| `FAS_ADMIN_PASSWORD` | 自动生成 | 不填则生成随机密码，打印在日志并写入 `data/fas/admin-password.txt` |
 | `EMQX_MONITOR_PORT` | `9527` | FAS 监听端口 |
 | `EMQX_MONITOR_DB` | `/opt/fmo-data/fas/fmo-audit-service.db` | FAS 数据库路径 |
 | `EMQX_MONITOR_WEBHOOK_URL` | `http://127.0.0.1:9527/api/ingest` | EMQX 规则回传 FAS 的地址 |
@@ -232,24 +235,25 @@ body    = {"username":"${username}","password":"${password}"}
 
 SAS 的 8080 不要暴露到公网；不同主机时请走内网/VPN/反向代理。
 
-## FAS 首次配置
+## FAS 首次配置：默认全自动，不用动手
 
-1. 浏览器打开 `http://<服务器IP>:<WEB_PORT>/__fmo/fas`，设置 FAS 管理员账号。
-2. 打开 `http://<服务器IP>:<WEB_PORT>/__fmo/emqx`，用 `admin` + `EMQX_DASHBOARD_PASSWORD` 登录，创建 API Key / Secret。
-3. 切回 FAS（`/__fmo/fas`）配置页：
-   - EMQX 地址填 `http://127.0.0.1:18083`（同一个容器内，**不要**填宿主机 IP）。
-   - 填入上一步的 API Key / Secret。
-   - 主题统计默认 `FMO/RAW`。
-   - 身份控制默认启用。
-4. 如果页面要求填 webhook，使用 `http://127.0.0.1:9527/api/ingest`。
+容器第一次启动时（`FAS_AUTOCONFIG=1`，默认开）会自动完成原来需要手动做的全部三步：
 
-也可以用命令行一次性配置：
+1. 生成一对专用 EMQX API Key/Secret，通过 EMQX 的 `api_key.bootstrap_file` 在启动时注册（保存在 `/opt/fmo-data/emqx-api-key`，重启不丢）。
+2. 等 EMQX 就绪后自动执行 FAS 的 `--configure`：写入连接配置并创建 `FMO/RAW` 主题统计 bridge。只在新库第一次启动时做一次，已有 FAS 数据库不会被改动。
+3. FAS 起来后自动创建管理员：
+   - 用户名 = `FAS_ADMIN_USERNAME`（默认 `admin`）
+   - 密码 = `FAS_ADMIN_PASSWORD`；不填则**自动生成**，打印在启动日志里并保存到 `data/fas/admin-password.txt`
+
+启动后直接打开 `http://<服务器IP>:<WEB_PORT>/__fmo/fas` 用上面的账号登录即可。看初始密码：
 
 ```bash
-docker exec -e EMQX_URL=http://127.0.0.1:18083 \
-  -e EMQX_API_KEY=<key> -e EMQX_API_SECRET=<secret> \
-  fmo /opt/fmo-fas/fmo-audit-service --configure
+docker logs fmo 2>&1 | grep 'FAS admin created'
+# 或
+docker exec fmo cat /opt/fmo-data/fas/admin-password.txt
 ```
+
+想自己指定密码就在 `.env` 里设 `FAS_ADMIN_PASSWORD`（至少 8 位）。想完全手动（自己上 Dashboard 建 API Key、自己跑初始化向导）就设 `FAS_AUTOCONFIG=0`，手动流程见 [使用手册](docs/usage-manual.md)。
 
 ## 自动升级（SAS + FAS 任一更新都会重建）
 

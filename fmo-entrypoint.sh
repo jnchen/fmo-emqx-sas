@@ -10,6 +10,14 @@ log() { printf '[fmo] %s\n' "$*"; }
 die() { printf '[fmo] ERROR: %s\n' "$*" >&2; exit 64; }
 need() { [[ -n "${!1:-}" ]] || die "$1 is required"; }
 
+# Random alphanumeric string. head finishes by byte count (no SIGPIPE),
+# so this is safe under `set -o pipefail` unlike `tr ... | head`.
+rand_alnum() {
+  local s
+  s="$(head -c 256 /dev/urandom | tr -dc 'a-zA-Z0-9')"
+  printf '%s' "${s:0:$1}"
+}
+
 json_array_or_empty() {
   local name="$1" value="${2:-}"
   [[ -z "$value" ]] && return 0
@@ -158,21 +166,175 @@ if [[ -z "${EMQX_AUTHENTICATION__1:-}" && -z "${EMQX_AUTHENTICATION:-}" ]]; then
   export EMQX_AUTHENTICATION__1
 fi
 
+# FAS autoconfig part 1: prepare the API key BEFORE EMQX starts, so EMQX
+# picks it up via api_key.bootstrap_file at boot. (FAS_AUTOCONFIG=1 only.)
+fas_pid=""
+fas_api_key=""
+fas_api_secret=""
+if [[ "${FAS_ENABLED:-1}" == "1" && "${FAS_AUTOCONFIG:-1}" == "1" ]]; then
+  keyfile=/opt/fmo-data/emqx-api-key
+  if [[ -n "${FAS_EMQX_API_KEY:-}" || -n "${FAS_EMQX_API_SECRET:-}" ]]; then
+    [[ -n "${FAS_EMQX_API_KEY:-}" && -n "${FAS_EMQX_API_SECRET:-}" ]] \
+      || die "FAS_EMQX_API_KEY and FAS_EMQX_API_SECRET must be set together"
+    if ! [[ -s "$keyfile" && "$(cat "$keyfile")" == "${FAS_EMQX_API_KEY}:${FAS_EMQX_API_SECRET}" ]]; then
+      umask 077
+      printf '%s:%s\n' "$FAS_EMQX_API_KEY" "$FAS_EMQX_API_SECRET" > "$keyfile"
+      umask 022
+    fi
+  elif [[ ! -s "$keyfile" ]]; then
+    fas_api_key="fmofas$(rand_alnum 16)"
+    fas_api_secret="$(rand_alnum 32)"
+    umask 077
+    printf '%s:%s\n' "$fas_api_key" "$fas_api_secret" > "$keyfile"
+    umask 022
+    log "generated EMQX API key for FAS: $fas_api_key (stored in $keyfile)"
+  fi
+  fas_api_key="$(cut -d: -f1 "$keyfile")"
+  fas_api_secret="$(cut -d: -f2 "$keyfile")"
+  export EMQX_API_KEY__BOOTSTRAP_FILE="$keyfile"
+fi
+
 log "starting EMQX"
 /usr/bin/docker-entrypoint.sh emqx foreground &
 emqx_pid=$!
 
-fas_pid=""
+# ---------------------------------------------------------------------------
+# FAS autoconfiguration.
+# The released FAS binary ignores EMQX_MONITOR_WEBHOOK_URL in --configure and
+# always auto-detects the container IP, so the EMQX-side webhook/rule must be
+# refreshed after every boot. Flow:
+#   * fresh DB  : run --configure BEFORE starting FAS (service then starts
+#                 fully configured); the bridge verification at that moment
+#                 reports "disconnected" because FAS is not listening yet -
+#                 expected, it connects once FAS starts.
+#   * every boot: after FAS is listening, re-run --configure once to refresh
+#                 the webhook to the current container IP (self-healing) and
+#                 to verify the bridge, plus initialize the admin account.
+# ---------------------------------------------------------------------------
+fas_run_configure() {
+  EMQX_URL="http://127.0.0.1:${EMQX_DASHBOARD_PORT:-18083}" \
+  EMQX_API_KEY="$fas_api_key" \
+  EMQX_API_SECRET="$fas_api_secret" \
+  EMQX_MONITOR_DB="$EMQX_MONITOR_DB" \
+  /opt/fmo-fas/fmo-audit-service --configure 2>&1
+}
+
+fas_wait_emqx() {
+  local emqx_mgmt="http://127.0.0.1:${EMQX_DASHBOARD_PORT:-18083}/api/v5/clients?limit=1"
+  for _ in $(seq 1 120); do
+    if curl -sf --max-time 2 -u "$fas_api_key:$fas_api_secret" -o /dev/null "$emqx_mgmt"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+fas_wait_service() {
+  for _ in $(seq 1 90); do
+    if curl -s --max-time 2 -o /dev/null "http://127.0.0.1:${EMQX_MONITOR_PORT:-9527}/api/status"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+fas_admin_setup() {
+  # Initialize the admin account once (idempotent - skipped when the
+  # FAS database already has an admin).
+  local user="${FAS_ADMIN_USERNAME:-admin}"
+  local pass="${FAS_ADMIN_PASSWORD:-}"
+  local generated=0
+  if [[ -z "$pass" ]]; then
+    pass="$(rand_alnum 16)"
+    generated=1
+  fi
+  local body=/tmp/fmo-fas-status.json
+  local need_setup=false
+  rm -f "$body"
+  if curl -s --max-time 5 -o "$body" "http://127.0.0.1:${EMQX_MONITOR_PORT:-9527}/api/status" \
+     && [[ -s "$body" ]] && grep -q '系统未初始化' "$body"; then
+    need_setup=true
+  fi
+  [[ "$need_setup" == "true" ]] || return 0
+  local resp
+  resp="$(curl -s --max-time 5 -X POST "http://127.0.0.1:${EMQX_MONITOR_PORT:-9527}/api/setup" \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\":\"$user\",\"password\":\"$pass\"}" || true)"
+  if printf '%s' "$resp" | grep -q '"ok":true'; then
+    if [[ "$generated" == "1" ]]; then
+      local pwfile
+      pwfile="$(dirname "${EMQX_MONITOR_DB:-/opt/fmo-data/fas/fmo-audit-service.db}")/admin-password.txt"
+      umask 077
+      printf '%s\n' "$pass" > "$pwfile"
+      umask 022
+      log "FAS admin created: username=$user password=$pass (also saved to $pwfile)"
+    else
+      log "FAS admin created: username=$user (password from FAS_ADMIN_PASSWORD)"
+    fi
+  else
+    log "FAS admin setup skipped: $resp"
+  fi
+}
+
+fas_post_start() {
+  # Background job after FAS starts: admin setup + webhook refresh/verify.
+  if ! fas_wait_service; then
+    log "WARNING: FAS not listening within 90s, autoconfig skipped"
+    return 0
+  fi
+  fas_admin_setup
+  if [[ "${FAS_AUTOCONFIG:-1}" == "1" && -n "$fas_api_key" ]]; then
+    if ! fas_wait_emqx; then
+      log "WARNING: EMQX API not ready in 120s, webhook refresh skipped"
+      return 0
+    fi
+    local out
+    if out="$(fas_run_configure)"; then
+      log "FAS bridge ready (webhook refreshed to current container IP)"
+    else
+      log "WARNING: FAS bridge verification failed:"
+      printf '%s\n' "$out" | sed 's/^/[fmo]   /'
+    fi
+  fi
+}
+
 if [[ "${FAS_ENABLED:-1}" == "1" ]]; then
   [[ -x /opt/fmo-fas/fmo-audit-service ]] || die "FAS binary not found at /opt/fmo-fas/fmo-audit-service"
   export EMQX_MONITOR_PORT="${EMQX_MONITOR_PORT:-9527}"
   export EMQX_MONITOR_DB="${EMQX_MONITOR_DB:-/opt/fmo-data/fas/fmo-audit-service.db}"
+  # Honored by newer FAS builds in --configure (stable loopback address).
+  # The currently released 2.0.22 binary ignores it and auto-detects the
+  # container IP instead; fas_post_start refreshes that every boot.
   export EMQX_MONITOR_WEBHOOK_URL="${EMQX_MONITOR_WEBHOOK_URL:-http://127.0.0.1:${EMQX_MONITOR_PORT}/api/ingest}"
   export DOTNET_RUNNING_IN_CONTAINER="${DOTNET_RUNNING_IN_CONTAINER:-true}"
   mkdir -p "$(dirname "$EMQX_MONITOR_DB")"
+
+  if [[ "${FAS_AUTOCONFIG:-1}" == "1" && -n "$fas_api_key" && ! -f "$EMQX_MONITOR_DB" ]]; then
+    # First boot: save connection config before the service starts. The
+    # bridge check will report disconnected (FAS not up yet) - the post-start
+    # job reconnects/verifies it a few seconds later.
+    log "first boot: waiting for EMQX API (up to 120s)"
+    if fas_wait_emqx; then
+      out="$(fas_run_configure)" || true
+      if printf '%s' "$out" | grep -q '已保存连接配置'; then
+        log "FAS connection config saved (bridge connects once FAS is up)"
+      else
+        log "WARNING: FAS autoconfigure failed, FAS starts unconfigured:"
+        printf '%s\n' "$out" | sed 's/^/[fmo]   /'
+      fi
+    else
+      log "WARNING: EMQX API not ready in 120s, skipping first-boot FAS autoconfigure"
+    fi
+  fi
+
   log "starting FAS on :${EMQX_MONITOR_PORT} (db=$EMQX_MONITOR_DB)"
   /opt/fmo-fas/fmo-audit-service &
   fas_pid=$!
+  if [[ "${FAS_AUTOCONFIG:-1}" == "1" ]]; then
+    fas_post_start &
+  fi
 else
   log "FAS disabled (FAS_ENABLED=$FAS_ENABLED)"
 fi
